@@ -123,8 +123,8 @@ class SimpleArm:
             J_theta, J_d = self.velocity_jacobian()
             
                 # Weighted Jacobian terms
-            J_theta_weighted = J_theta + w2 * 2 * np.array(self.angles)
-            J_d_weighted = J_d + w1 * 2 * np.array(self.delta)
+            J_theta_weighted = J_theta + w2 * 2 * np.sum(np.array(self.angles))
+            J_d_weighted = J_d + w1 * 2 * np.sum(np.array(self.delta))
             # Combine them
             J = np.hstack((J_theta_weighted, J_d_weighted))
 
@@ -145,13 +145,47 @@ class SimpleArm:
             self.delta = [ max(self.delta[i] , self.delta[i] + delta_updates[i]) for i in range(self.n)]
             
         self.FK()  # Final update of joint positions
+    
+    def visualizeJacobian(self):
+        J_theta, J_d = self.velocity_jacobian()  # Get both Jacobians
+        # Combine them horizontally for visualization
+        J = np.hstack((J_theta, J_d))
         
+        max_norm = np.max(np.linalg.norm(J, axis=0))
+        if max_norm == 0:
+            max_norm = 1  
+        total_length = sum(self.L)
+        scale = 0.2 * total_length / max_norm  
+        
+        arrows = vd.Assembly()
+        arrows.name = "JacobianArrows"
+        color_list = ['red', 'green', 'blue', 'orange', 'purple', 'cyan', 'magenta', 'yellow'][:self.n]
+        
+        # Visualize angular velocity components (J_theta)
+        for i in range(self.n):
+            o_i = self.Jw[i,:]
+            J_col = J_theta[:,i] * scale
+            arrow = vd.Arrow(o_i, o_i + J_col, c=color_list[i % len(color_list)])
+            arrows += arrow
+
+        
+        # Visualize linear velocity components (J_d)
+        for i in range(self.n):
+            o_i = self.Jw[i,:]
+            J_col = J_d[:,i] * scale
+            arrow = vd.Arrow(o_i, o_i + J_col, c=color_list[i % len(color_list)], alpha=0.5)
+            arrows += arrow
+
+            
+        return arrows
+
     def draw(self):
         vd_arm = vd.Assembly()
         vd_arm += vd.Sphere(pos=self.Jw[0, :], r=0.05)
         for i in range(1, self.n+1):
             vd_arm += vd.Cylinder(pos=[self.Jw[i-1, :], self.Jw[i, :]], r=0.02)
             vd_arm += vd.Sphere(pos=self.Jw[i, :], r=0.05)
+        vd_arm+= self.visualizeJacobian()
         return vd_arm
 
 # %%
