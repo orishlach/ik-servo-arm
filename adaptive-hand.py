@@ -2,6 +2,10 @@
 import vedo as vd
 vd.settings.default_backend = 'vtk'
 import numpy as np
+from vedo.pyplot import plot
+# %%
+
+fig = None
 
 def Rot(angle, axis):
     axis = np.array(axis)
@@ -13,9 +17,28 @@ def Rot(angle, axis):
     R = I + np.sin(angle)*K + (1-np.cos(angle))*np.dot(K,K)
     return R
 
+def UpdatePlot(iterations, gradient_norms):
+    global fig
+    ################# plot
+    if fig is not None:
+        plt.at(1).remove(fig)
+
+    fig = plot(
+        iterations, gradient_norms,
+        title= "Objective",
+        xtitle="steps",
+        ytitle="gradient value",
+        aspect=16/9,     # aspect ratio x/y of plot
+        axes=dict(text_scale=1.2),
+        ).clone2d(pos='center', size=1.3)
+
+    plt.at(1).add(fig)
+
 class SimpleArm:
     def __init__(self, n=5, L=None):
         self.n = n
+        self.WeightDelta = 0.0
+        self.WeightAngle = 0.0
         self.angles = [0.0] * self.n
         if L is None:
             self.L = [1.0]*self.n
@@ -93,59 +116,66 @@ class SimpleArm:
     #                                             #
     ###############################################
     def IK(self, target):
-        """
-        input: target position pₑ
-        """
-        max_iterations = 4000
-        alpha = 0.1  # Step size
-        lambda_sq = 0.1  # Damping factor
-        
-        for _ in range(max_iterations):
+        max_iterations = 1000
+        alpha = 0.01
+        gradient_norms = []  # List to store gradient norms for each iteration
+        iterations = []  # List to store iteration count
+
+        for i in range(max_iterations):
             current_pos = self.FK()
             error = target - current_pos
-            
-            
-            w1 = sliderWeightDelta.value  
-            w2 = sliderWeightAngle.value  
-            '''
-            norm_alpha_squared = np.sum(np.array(self.angles) ** 2)  # ||alpha||^2
-            norm_delta_squared = np.sum(np.array(self.delta) ** 2)  # ||delta||^2
-            norm_error_squared = np.sum(error ** 2)  # ||error||^2
-            penalty_delta = w1 * norm_delta_squared
-            penalty_alpha = w2 * norm_alpha_squared
-            total_penalty = penalty_alpha + penalty_delta + norm_error_squared
-            '''
-            
-            if np.linalg.norm(error) < 1e-5:
-                #print(f"Penalty : {total_penalty:.3f}") 
-                break
-                
+            w1 = self.WeightDelta 
+            w2 = self.WeightAngle
             J_theta, J_d = self.velocity_jacobian()
-            
-                # Weighted Jacobian terms
-            J_theta_weighted = J_theta + w2 * 2 * np.sum(np.array(self.angles))
-            J_d_weighted = J_d + w1 * 2 * np.sum(np.array(self.delta))
-            # Combine them
-            J = np.hstack((J_theta_weighted, J_d_weighted))
 
-            # Damped Least Squares
-            J_dag = J.T @ np.linalg.inv(J @ J.T + lambda_sq * np.eye(3))
-            
-            # Compute joint updates (both angles and extensions)
-            updates = alpha * (J_dag @ error)
-            
-            # Split updates between angles and extensions
+            #J_theta_weighted = J_theta + w2 * 2 * np.array(self.angles)  
+            #J_d_weighted = J_d + w1 * 2 * np.array(self.delta) 
+            J = np.hstack((J_theta, J_d))
+            JTJ = J.T @ J 
+
+            # Construct the block matrix H 8X8
+            H_alpha = 2 * w2 * np.eye(J_theta.shape[1])
+            H_delta = 2 * w1 * np.eye(J_d.shape[1])
+            H = np.block([[H_alpha, np.zeros((H_alpha.shape[0], H_delta.shape[1]))],
+                        [np.zeros((H_delta.shape[0], H_alpha.shape[1])), H_delta]])
+
+            # Calculate the pseudo-inverse (Hessian O^-1)
+            J_dag = np.linalg.pinv(JTJ + H)
+
+            # Gradient O
+            angles_extended = np.hstack([np.array(self.angles), np.zeros(4)])  # Extend angles to 1x8
+            delta_extended = np.hstack([np.zeros(4), np.array(self.delta)])  # Extend delta to 1x8
+
+            grad = J.T @ error + 2 * w2 * angles_extended + 2 * w1 * delta_extended
+
+            # Hessian O^-1 * grad O
+            updates = alpha * (J_dag @ grad)
+
+            # Store iteration count and gradient norm
+            iterations.append(i)
+            gradient_norms.append(np.linalg.norm(grad))
+
+            # Split updates into angles and deltas
             angle_updates = updates[:self.n]
             delta_updates = updates[self.n:]
-            
-            # Update joint angles
+
             self.angles = [angle + update for angle, update in zip(self.angles, angle_updates)]
-            
-            # update delta values 
-            self.delta = [ max(self.delta[i] , self.delta[i] + delta_updates[i]) for i in range(self.n)]
-            
-        self.FK()  # Final update of joint positions
-    
+            self.delta = [max(self.delta[i], self.delta[i] + delta_updates[i]) for i in range(self.n)]
+
+            if np.linalg.norm(grad) < 1e-5:
+                print(f"Converged in {i} iterations")
+                break
+        
+        # Plot the gradient norm vs iterations when the loop exits
+        UpdatePlot(iterations, gradient_norms)
+
+        self.FK()
+
+
+
+
+
+
     def visualizeJacobian(self):
         J_theta, J_d = self.velocity_jacobian()  # Get both Jacobians
         # Combine them horizontally for visualization
@@ -159,24 +189,35 @@ class SimpleArm:
         
         arrows = vd.Assembly()
         arrows.name = "JacobianArrows"
-        color_list = ['red', 'green', 'blue', 'orange', 'purple', 'cyan', 'magenta', 'yellow'][:self.n]
+        color_list = ['red', 'green', 'blue', 'red', 'purple', 'cyan', 'magenta', 'black'][:self.n]
         
         # Visualize angular velocity components (J_theta)
-        for i in range(self.n):
-            o_i = self.Jw[i,:]
-            J_col = J_theta[:,i] * scale
+        for i in range(1, self.n):
+            o_i = self.Jw[i, :]  # Use joint i directly
+            J_col = J_theta[:, i] * scale
             arrow = vd.Arrow(o_i, o_i + J_col, c=color_list[i % len(color_list)])
             arrows += arrow
 
-        
         # Visualize linear velocity components (J_d)
-        for i in range(self.n):
-            o_i = self.Jw[i,:]
-            J_col = J_d[:,i] * scale
-            arrow = vd.Arrow(o_i, o_i + J_col, c=color_list[i % len(color_list)], alpha=0.5)
+        for i in range(1, self.n):
+            o_i = self.Jw[i, :]  # Use joint i directly
+            J_col = J_d[:, i] * scale
+            arrow = vd.Arrow(o_i, o_i + 3 * J_col, c=color_list[i % len(color_list)], alpha=0.5)
             arrows += arrow
 
-            
+        # Add an additional vector for n+1 (end-effector position)
+        o_n = self.Jw[self.n, :]  # Position of end-effector
+        J_col_theta_end = J_theta[:, self.n - 1] * scale  # Angular velocity component at the end
+        J_col_d_end = J_d[:, self.n - 1] * scale  # Linear velocity component at the end
+        
+        # Add angular velocity arrow at the end-effector
+        arrow_theta_end = vd.Arrow(o_n, o_n + J_col_theta_end, c='black', alpha=0.8)
+        arrows += arrow_theta_end
+
+        # Add linear velocity arrow at the end-effector
+        arrow_d_end = vd.Arrow(o_n, o_n + 3 * J_col_d_end, c='black', alpha=0.5)
+        arrows += arrow_d_end
+
         return arrows
 
     def draw(self):
@@ -185,8 +226,11 @@ class SimpleArm:
         for i in range(1, self.n+1):
             vd_arm += vd.Cylinder(pos=[self.Jw[i-1, :], self.Jw[i, :]], r=0.02)
             vd_arm += vd.Sphere(pos=self.Jw[i, :], r=0.05)
-        vd_arm+= self.visualizeJacobian()
+        vd_arm+= self#.visualizeJacobian()
         return vd_arm
+
+
+
 
 # %%
 # Global variables and visualization setup
@@ -197,8 +241,8 @@ activeJoint = 0
 def LeftButtonPress(evt):
     global IK_target
     IK_target = evt.picked3d
-    plt.remove("Sphere")
-    plt.add(vd.Sphere(pos=IK_target, r=0.05, c='b'))
+    plt.at(0).remove("Sphere")
+    plt.at(0).add(vd.Sphere(pos=IK_target, r=0.05, c='b'))
     
     # Fully reset all delta and angle values to ensure no previous computation persists
     arm.delta = [0.0] * arm.n  # Resetting delta values
@@ -208,26 +252,29 @@ def LeftButtonPress(evt):
     arm.IK(IK_target)
     
     # Clear previous visualization and redraw the arm's state
-    plt.remove("Assembly")
-    plt.add(arm.draw())
-    plt.render()
+    plt.at(0).remove("Assembly")
+    plt.at(0).add(arm.draw())
+    plt.at(0).render()
 
 def OnWeightAngle(widget, event):
-    pass
+    arm.WeightAngle = widget.value
 
 def OnWeightDelta(widget, event):
-    pass
+    arm.WeightDelta = widget.value
 
-plt = vd.Plotter()
-plt += arm.draw()
-plt += vd.Sphere(pos=IK_target, r=0.05, c='b').draggable(True)
-plt += vd.Plane(s=[3*sum(arm.L), 3*sum(arm.L)])
+plt = vd.Plotter(N=2)
+plt.at(0).add(arm.draw())
 
-sliderWeightDelta = plt.add_slider(OnWeightDelta, 0, 1, 0.0, title="Weight Delta",title_size=0.5, pos=[(0.7, 0.04), (0.95, 0.04)], c="dg")
-sliderWeightAngle = plt.add_slider(OnWeightAngle, 0, 1, 0.0, title="Weight Angle",title_size=0.5, pos=[(0.05, 0.04), (0.30, 0.04)],c="dr")
+plt.at(0).add(vd.Sphere(pos=IK_target, r=0.05, c='b').draggable(True))  
+plt.at(0).add(vd.Plane(s=[3*sum(arm.L), 3*sum(arm.L)]))
 
-plt.add_callback('LeftButtonPress', LeftButtonPress)
+sliderWeightDelta = plt.at(0).add_slider(OnWeightDelta, 0, 1, 0.0, title="Weight Delta",title_size=0.5, pos=3, c="dg")
+sliderWeightAngle = plt.at(0).add_slider(OnWeightAngle, 0, 1, 0.0, title="Weight Angle",title_size=0.5, pos=1,c="dr")
 
-plt.user_mode('2d').show(zoom="tightest")
+plt.at(0).add_callback('LeftButtonPress', LeftButtonPress)
+
+plt.user_mode('2d')
+plt.show(zoom="tightest" ,interactive=True)
 plt.close()
 # %%
+
