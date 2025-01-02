@@ -25,7 +25,7 @@ def UpdatePlot(iterations, gradient_norms):
 
     fig = plot(
         iterations, gradient_norms,
-        title= "Objective",
+        title= "",
         xtitle="steps",
         ytitle="gradient value",
         aspect=16/9,     # aspect ratio x/y of plot
@@ -95,8 +95,7 @@ class SimpleArm:
         if angles is not None:
             self.angles = angles
         if delta is not None:
-            # Ensure segment lengths don't go below minimum
-            self.delta = [ d for i, d in enumerate(delta)]
+            self.delta =  delta
 
         self.Jw[0, :] = np.array([0.0, 0.0, 0.0])
         total_angle = 0.0
@@ -104,7 +103,7 @@ class SimpleArm:
         for i in range(1, self.n+1):
             total_angle += self.angles[i-1]
             R = Rot(total_angle, [0, 0, 1])
-            length = max(self.L[i-1] + self.delta[i-1], self.min_lengths[i-1])
+            length = self.L[i-1] + self.delta[i-1]  # No need for 'max' here anymore, handled in delta adjustment
             self.Jw[i, :] = self.Jw[i-1, :] + R @ np.array([length, 0, 0])
 
         return self.Jw[-1, :]
@@ -117,15 +116,16 @@ class SimpleArm:
     ###############################################
     def IK(self, target):
         max_iterations = 1000
-        alpha = 0.01
+        alpha = 0.1
         gradient_norms = []  # List to store gradient norms for each iteration
         iterations = []  # List to store iteration count
-
+        w1 = self.WeightDelta 
+        w2 = self.WeightAngle 
+        
         for i in range(max_iterations):
             current_pos = self.FK()
             error = target - current_pos
-            w1 = self.WeightDelta 
-            w2 = self.WeightAngle
+
             J_theta, J_d = self.velocity_jacobian()
 
             #J_theta_weighted = J_theta + w2 * 2 * np.array(self.angles)  
@@ -160,7 +160,9 @@ class SimpleArm:
             delta_updates = updates[self.n:]
 
             self.angles = [angle + update for angle, update in zip(self.angles, angle_updates)]
-            self.delta = [max(self.delta[i], self.delta[i] + delta_updates[i]) for i in range(self.n)]
+            self.min_delta = -1
+            self.max_delta = 1   
+            self.delta = [max(self.min_delta, min(self.delta[i] + delta_updates[i], self.max_delta)) for i in range(self.n)]
 
             if np.linalg.norm(grad) < 1e-5:
                 print(f"Converged in {i} iterations")
@@ -172,51 +174,26 @@ class SimpleArm:
         self.FK()
 
 
-
-
-
-
     def visualizeJacobian(self):
-        J_theta, J_d = self.velocity_jacobian()  # Get both Jacobians
-        # Combine them horizontally for visualization
-        J = np.hstack((J_theta, J_d))
-        
-        max_norm = np.max(np.linalg.norm(J, axis=0))
-        if max_norm == 0:
-            max_norm = 1  
-        total_length = sum(self.L)
-        scale = 0.2 * total_length / max_norm  
-        
+        global activeJacobian  # Use the active joint index selected by the user
         arrows = vd.Assembly()
         arrows.name = "JacobianArrows"
-        color_list = ['red', 'green', 'blue', 'red', 'purple', 'cyan', 'magenta', 'black'][:self.n]
-        
-        # Visualize angular velocity components (J_theta)
-        for i in range(1, self.n):
-            o_i = self.Jw[i, :]  # Use joint i directly
-            J_col = J_theta[:, i] * scale
-            arrow = vd.Arrow(o_i, o_i + J_col, c=color_list[i % len(color_list)])
-            arrows += arrow
 
-        # Visualize linear velocity components (J_d)
-        for i in range(1, self.n):
-            o_i = self.Jw[i, :]  # Use joint i directly
-            J_col = J_d[:, i] * scale
-            arrow = vd.Arrow(o_i, o_i + 3 * J_col, c=color_list[i % len(color_list)], alpha=0.5)
-            arrows += arrow
+        J_theta, J_d = self.velocity_jacobian()  # Get both Jacobians
 
-        # Add an additional vector for n+1 (end-effector position)
-        o_n = self.Jw[self.n, :]  # Position of end-effector
-        J_col_theta_end = J_theta[:, self.n - 1] * scale  # Angular velocity component at the end
-        J_col_d_end = J_d[:, self.n - 1] * scale  # Linear velocity component at the end
-        
-        # Add angular velocity arrow at the end-effector
-        arrow_theta_end = vd.Arrow(o_n, o_n + J_col_theta_end, c='black', alpha=0.8)
-        arrows += arrow_theta_end
+        theta_i = self.Jw[-1, :]  # Use joint i directly
+        J_col = J_theta[:, activeJacobian] 
 
-        # Add linear velocity arrow at the end-effector
-        arrow_d_end = vd.Arrow(o_n, o_n + 3 * J_col_d_end, c='black', alpha=0.5)
-        arrows += arrow_d_end
+        arrow_theta = vd.Arrow(theta_i, theta_i + J_col, s=0.01,c='blue', alpha=0.4)
+
+
+        delta_i = self.Jw[-1, :]  # Use joint i directly
+        J_col = J_d[:, activeJacobian]
+  
+        arrow_delta = vd.Arrow(delta_i, delta_i + J_col,s=0.01,c='red', alpha=0.4)
+  
+        arrows += arrow_theta
+        arrows += arrow_delta
 
         return arrows
 
@@ -229,7 +206,14 @@ class SimpleArm:
         vd_arm+= self#.visualizeJacobian()
         return vd_arm
 
+    def show_arrows(self):
+        # Remove the previous Jacobian arrow if it exists
+        plt.at(0).remove("JacobianArrow")
 
+        # Visualize the new Jacobian arrow
+        arrow = arm.visualizeJacobian()
+        arrow.name = "JacobianArrow"  # Assign a name for easier removal
+        plt.at(0).add(arrow)
 
 
 # %%
@@ -237,6 +221,48 @@ class SimpleArm:
 arm = SimpleArm(n=4, L=[1, 1, 1, 1])
 IK_target = [1, 1, 0]
 activeJoint = 0
+activeJacobian = 0
+
+def OnSliderAngle(widget, event):
+    global activeJoint
+    arm.angles[activeJoint] = widget.value
+    arm.FK()
+
+    # Compute the Jacobian
+    arm.velocity_jacobian()
+
+    arm.show_arrows()
+
+    # Update arm drawing
+    plt.at(0).remove("Assembly")
+    plt.at(0).add(arm.draw())
+    plt.at(0).render()
+
+def OnSliderDelta(widget, event):
+    global activeJoint
+    arm.delta[activeJoint] = widget.value
+    arm.FK()
+
+    # Compute the Jacobian
+    arm.velocity_jacobian()
+
+    arm.show_arrows()
+
+    plt.remove("Assembly")
+    plt.add(arm.draw())
+    plt.render()
+
+
+def OnCurrentJoint(widget, event):
+    global activeJoint
+    activeJoint = round(widget.value)
+    sliderAngle.value = arm.angles[activeJoint]
+
+def OnCurrentJacobian(widget, event):
+    global activeJacobian
+    activeJacobian = round(widget.value)
+    print("Active Jacobian: ", activeJacobian)
+ 
 
 def LeftButtonPress(evt):
     global IK_target
@@ -256,6 +282,7 @@ def LeftButtonPress(evt):
     plt.at(0).add(arm.draw())
     plt.at(0).render()
 
+
 def OnWeightAngle(widget, event):
     arm.WeightAngle = widget.value
 
@@ -268,8 +295,15 @@ plt.at(0).add(arm.draw())
 plt.at(0).add(vd.Sphere(pos=IK_target, r=0.05, c='b').draggable(True))  
 plt.at(0).add(vd.Plane(s=[3*sum(arm.L), 3*sum(arm.L)]))
 
-sliderWeightDelta = plt.at(0).add_slider(OnWeightDelta, 0, 1, 0.0, title="Weight Delta",title_size=0.5, pos=3, c="dg")
-sliderWeightAngle = plt.at(0).add_slider(OnWeightAngle, 0, 1, 0.0, title="Weight Angle",title_size=0.5, pos=1,c="dr")
+
+
+sliderCurrentJoint = plt.at(0).add_slider(OnCurrentJoint, 0, arm.n-1, 0, title="Current joint",title_size=0.7, pos=[(0.03, 0.06), (0.15, 0.06)], delayed=True)
+sliderAngle =  plt.at(0).add_slider(OnSliderAngle,-np.pi,np.pi,0., title="Joint Angle",title_size=0.7, pos=[(0.20, 0.06), (0.32, 0.06)])
+sliderCurrentJacobian = plt.at(0).add_slider(OnCurrentJacobian, 0, arm.n-1, 0, title="Joint Arrow",title_size=0.7, pos=[(0.37, 0.92), (0.49, 0.92)], delayed=True)
+sliderDelta = plt.add_slider(OnSliderDelta, -0.5, 0.5, arm.delta[activeJoint], title="Delta Length",title_size=0.7, pos=[(0.37, 0.06), (0.49, 0.06)])
+
+sliderWeightDelta = plt.at(0).add_slider(OnWeightDelta, 0, 1, 0.0, title="W_Delta",title_size=0.7, pos=[(0.05, 0.92), (0.15, 0.92)], c="dr")
+sliderWeightAngle = plt.at(0).add_slider(OnWeightAngle, 0, 1, 0.0, title="W_Angle",title_size=0.7, pos=[(0.20, 0.92), (0.30, 0.92)],c="dr")
 
 plt.at(0).add_callback('LeftButtonPress', LeftButtonPress)
 
