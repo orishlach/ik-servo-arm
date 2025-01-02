@@ -7,6 +7,16 @@ from vedo.pyplot import plot
 
 fig = None
 
+
+
+def line_search(func, X, d): 
+    alpha = 1.0
+    while func(X + d*alpha) < func(X):  # If the function value increases, reduce alpha
+        alpha *= 0.5                                
+    return alpha
+
+
+
 def Rot(angle, axis):
     axis = np.array(axis)
     axis = axis/np.linalg.norm(axis)
@@ -109,6 +119,16 @@ class SimpleArm:
         return self.Jw[-1, :]
 
 
+
+    # def objective(X):
+
+    #     norm_alpha_squared = np.sum(np.array(self.angles) ** 2)  # ||alpha||^2
+    #     norm_delta_squared = np.sum(np.array(self.delta) ** 2)  # ||delta||^2
+    #     norm_error_squared = np.sum(error ** 2)  # ||error||^2
+    #     penalty_delta = w1 * norm_delta_squared
+    #     penalty_alpha = w2 * norm_alpha_squared
+    #     objective = penalty_alpha + penalty_delta + norm_error_squared
+
     ###############################################
     #                                             #
     #         INVERSE KINEMATICS (IK)             #
@@ -116,21 +136,34 @@ class SimpleArm:
     ###############################################
     def IK(self, target):
         max_iterations = 1000
-        alpha = 0.1
+        alpha = 1
         gradient_norms = []  # List to store gradient norms for each iteration
         iterations = []  # List to store iteration count
         w1 = self.WeightDelta 
         w2 = self.WeightAngle 
-        
+        print(self.angles)
         for i in range(max_iterations):
             current_pos = self.FK()
-            error = target - current_pos
-
+            error = -target + current_pos
+            
+            norm_alpha_squared = np.sum(np.array(self.angles) ** 2)  # ||alpha||^2
+            norm_delta_squared = np.sum(np.array(self.delta) ** 2)  # ||delta||^2
+            norm_error_squared = np.sum(error ** 2)  # ||error||^2
+            penalty_delta = w1 * norm_delta_squared
+            penalty_alpha = w2 * norm_alpha_squared
+            objective = penalty_alpha + penalty_delta + norm_error_squared
+        
             J_theta, J_d = self.velocity_jacobian()
+            # Gradient O
+            
+            angles_extended = np.hstack([np.array(self.angles), np.zeros(4)])  # Extend angles to 1x8
+            delta_extended = np.hstack([np.zeros(4), np.array(self.delta)])  # Extend delta to 1x8
+            J = np.hstack((J_theta, J_d))
+
+            grad = J.T @ error + 2 * w2 * angles_extended + 2 * w1 * delta_extended
 
             #J_theta_weighted = J_theta + w2 * 2 * np.array(self.angles)  
             #J_d_weighted = J_d + w1 * 2 * np.array(self.delta) 
-            J = np.hstack((J_theta, J_d))
             JTJ = J.T @ J 
 
             # Construct the block matrix H 8X8
@@ -140,36 +173,32 @@ class SimpleArm:
                         [np.zeros((H_delta.shape[0], H_alpha.shape[1])), H_delta]])
 
             # Calculate the pseudo-inverse (Hessian O^-1)
-            J_dag = np.linalg.pinv(JTJ + H)
-
-            # Gradient O
-            angles_extended = np.hstack([np.array(self.angles), np.zeros(4)])  # Extend angles to 1x8
-            delta_extended = np.hstack([np.zeros(4), np.array(self.delta)])  # Extend delta to 1x8
-
-            grad = J.T @ error + 2 * w2 * angles_extended + 2 * w1 * delta_extended
+            J_dag = np.linalg.pinv(JTJ + H)     
 
             # Hessian O^-1 * grad O
-            updates = alpha * (J_dag @ grad)
+            dk = -alpha* J_dag @ grad
 
-            # Store iteration count and gradient norm
-            iterations.append(i)
-            gradient_norms.append(np.linalg.norm(grad))
+            #alpha = line_search(objective, np.hstack(self.angles,self.delta), dk)
+  
 
             # Split updates into angles and deltas
-            angle_updates = updates[:self.n]
-            delta_updates = updates[self.n:]
+            angle_updates = dk[:self.n]
+            delta_updates = dk[self.n:]
 
-            self.angles = [angle + update for angle, update in zip(self.angles, angle_updates)]
-            self.min_delta = -1
-            self.max_delta = 1   
-            self.delta = [max(self.min_delta, min(self.delta[i] + delta_updates[i], self.max_delta)) for i in range(self.n)]
 
+            self.angles += angle_updates
+ 
+            self.delta += delta_updates
+
+
+
+            gradient_norms.append(np.linalg.norm(grad))
             if np.linalg.norm(grad) < 1e-5:
                 print(f"Converged in {i} iterations")
                 break
         
         # Plot the gradient norm vs iterations when the loop exits
-        UpdatePlot(iterations, gradient_norms)
+        UpdatePlot(range(len(gradient_norms)), gradient_norms)
 
         self.FK()
 
@@ -267,6 +296,10 @@ def OnCurrentJacobian(widget, event):
 def LeftButtonPress(evt):
     global IK_target
     IK_target = evt.picked3d
+    print(f"Current Point:{IK_target}\n")
+    IK_target_2d = evt.picked2d
+    print(f"Current 2d Point:{IK_target_2d}\n")
+
     plt.at(0).remove("Sphere")
     plt.at(0).add(vd.Sphere(pos=IK_target, r=0.05, c='b'))
     
