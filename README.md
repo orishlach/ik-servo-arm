@@ -12,7 +12,6 @@
       <img src="https://img.shields.io/github/license/orishlach/ik-servo-arm.svg?color=yellow" alt="license" />
     </a>
   </p>
-</div>
 
   
 <!-- Links -->
