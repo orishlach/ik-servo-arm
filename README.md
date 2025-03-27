@@ -90,10 +90,11 @@ python main.py
 
 
 ## Preview 
-
+<div align="center">
 <a href="https://www.youtube.com/shorts/3k47y3o17Gk" target="_blank">
   <img src="docs/img.jpg" alt="Watch Demo Video" width="480"/>
 </a>
+</div>
 
 > Click the image to see a short video demonstration of the physical robotic arm controlled via the GUI.  
 
