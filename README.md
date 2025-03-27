@@ -71,14 +71,14 @@ pip install -r requirements.txt
 If you are using a Pololu Maestro:
 
 - Connect the device to your computer.
-- Set the correct port and baud rate in `main.py` (e.g., `COM3` or `/dev/ttyACM0`).
+- Set the correct port and baud rate (e.g., `COM3` or `/dev/ttyACM0`).
 
 If no hardware is connected, the simulation will run without sending servo commands.
 
-4. **Run the Application**
+1. **Run the Application**
 
 ```bash
-python main.py
+python ik-servo-arm.py
 ```
 
 5. **Usage**
